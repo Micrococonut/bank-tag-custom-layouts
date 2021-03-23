@@ -24,15 +24,20 @@ import net.runelite.api.events.DraggingWidgetChanged;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPostFired;
+import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.widgets.JavaScriptCallback;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetID;
 import net.runelite.api.widgets.WidgetInfo;
+import net.runelite.api.widgets.WidgetPositionMode;
+import net.runelite.api.widgets.WidgetType;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.ItemVariationMapping;
+import net.runelite.client.game.SpriteManager;
 import net.runelite.client.game.chatbox.ChatboxPanelManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDependency;
@@ -62,16 +67,20 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.IntPredicate;
 import java.util.stream.Collectors;
 
-import static net.runelite.client.plugins.banktags.BankTagsPlugin.*;
+import static net.runelite.client.plugins.banktags.BankTagsPlugin.ICON_SEARCH;
+import static net.runelite.client.plugins.banktags.BankTagsPlugin.TAG_TABS_CONFIG;
 
 @Slf4j
 /* TODO
 	Why are bank tag tabs not using exact matches for tag names but instead checking with something like startsWith?
 	Weird ids added for scb, possibly all variant items.
+
+	Deleting a tab does not delete its layout.
 
 	Tag import does not delete existing tags in the tab.
 
@@ -143,6 +152,9 @@ public class BankTagLayoutsPlugin extends Plugin
 	private OverlayManager overlayManager;
 
 	@Inject
+	private SpriteManager spriteManager;
+
+	@Inject
 	ItemManager itemManager;
 
 	@Inject
@@ -173,16 +185,100 @@ public class BankTagLayoutsPlugin extends Plugin
 	// The current indexes for where each widget should appear in the custom bank layout. Should be ignored if there is not tab active.
 	private final Map<Integer, Widget> indexToWidget = new HashMap<>();
 
+	private Widget showLayoutPreviewButton = null;
+	private Widget applyLayoutPreviewButton = null;
+    private Widget cancelLayoutPreviewButton = null;
+	private Widget layoutPreviewText = null;
+
+	private void updateButton() {
+		System.out.println("update button");
+		if (showLayoutPreviewButton == null) {
+			Widget parent = client.getWidget(WidgetInfo.BANK_CONTENT_CONTAINER);
+			showLayoutPreviewButton = parent.createChild(-1, WidgetType.GRAPHIC);
+
+			showLayoutPreviewButton.setOriginalHeight(18);
+			showLayoutPreviewButton.setOriginalWidth(18);
+			showLayoutPreviewButton.setYPositionMode(WidgetPositionMode.ABSOLUTE_BOTTOM);
+			showLayoutPreviewButton.setOriginalX(434);
+			showLayoutPreviewButton.setOriginalY(45);
+			showLayoutPreviewButton.setSpriteId(2848);
+
+			showLayoutPreviewButton.setOnOpListener((JavaScriptCallback) (e) -> {
+			    showLayoutPreview();
+			});
+			showLayoutPreviewButton.setHasListener(true);
+			showLayoutPreviewButton.revalidate();
+			showLayoutPreviewButton.setAction(0, "Preview auto layout");
+
+			applyLayoutPreviewButton = parent.createChild(-1, WidgetType.GRAPHIC);
+
+			applyLayoutPreviewButton.setOriginalHeight(18);
+			applyLayoutPreviewButton.setOriginalWidth(18);
+			applyLayoutPreviewButton.setYPositionMode(WidgetPositionMode.ABSOLUTE_BOTTOM);
+			applyLayoutPreviewButton.setOriginalX(434 - 30);
+			applyLayoutPreviewButton.setOriginalY(45);
+			applyLayoutPreviewButton.setSpriteId(Sprites.APPLY_PREVIEW.getSpriteId());
+			applyLayoutPreviewButton.setNoClickThrough(true);
+
+			applyLayoutPreviewButton.setOnOpListener((JavaScriptCallback) (e) -> {
+				System.out.println("apply layout preview");
+				applyLayoutPreview();
+			});
+			applyLayoutPreviewButton.setHasListener(true);
+			applyLayoutPreviewButton.revalidate();
+			applyLayoutPreviewButton.setAction(0, "Use this layout");
+
+			cancelLayoutPreviewButton = parent.createChild(-1, WidgetType.GRAPHIC);
+
+			cancelLayoutPreviewButton.setOriginalHeight(18);
+			cancelLayoutPreviewButton.setOriginalWidth(18);
+			cancelLayoutPreviewButton.setYPositionMode(WidgetPositionMode.ABSOLUTE_BOTTOM);
+			cancelLayoutPreviewButton.setOriginalX(434 - 60);
+			cancelLayoutPreviewButton.setOriginalY(45);
+			cancelLayoutPreviewButton.setSpriteId(Sprites.CANCEL_PREVIEW.getSpriteId());
+			cancelLayoutPreviewButton.setNoClickThrough(true);
+
+			cancelLayoutPreviewButton.setOnOpListener((JavaScriptCallback) (e) -> {
+				cancelLayoutPreview();
+			});
+			cancelLayoutPreviewButton.setHasListener(true);
+			cancelLayoutPreviewButton.revalidate();
+			cancelLayoutPreviewButton.setAction(0, "Cancel preview");
+
+			layoutPreviewText = parent.createChild(-1, WidgetType.TEXT);
+
+			layoutPreviewText.setOriginalHeight(18);
+			layoutPreviewText.setOriginalWidth(18);
+			layoutPreviewText.setYPositionMode(WidgetPositionMode.ABSOLUTE_BOTTOM);
+			layoutPreviewText.setText("Use this layout?");
+			layoutPreviewText.setOriginalX(434 - 120);
+			layoutPreviewText.setOriginalY(45);
+			layoutPreviewText.revalidate();
+			layoutPreviewText.setAction(0, "Cancel preview");
+		}
+
+		hideLayoutPreviewButtons(!isShowingPreview());
+		showLayoutPreviewButton.setHidden(false);
+	}
+
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded event)
+	{
+		if (event.getGroupId() == WidgetID.BANK_GROUP_ID) showLayoutPreviewButton = null; // when the bank widget is unloaded or loaded (not sure which) the button is removed from it somehow. So, set it to null so that it will be regenerated.
+	}
+
 	@Override
 	protected void startUp()
 	{
 		overlayManager.add(fakeItemOverlay);
+		spriteManager.addSpriteOverrides(Sprites.values());
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		overlayManager.remove(fakeItemOverlay);
+		spriteManager.removeSpriteOverrides(Sprites.values());
 	}
 
 	@Subscribe
@@ -239,7 +335,7 @@ public class BankTagLayoutsPlugin extends Plugin
 			cancelLayoutPreview();
 		}
 		if ("accept".equals(commandExecuted.getCommand())) {
-			useLayoutPreview();
+			applyLayoutPreview();
 		}
 
 		if ("itemname".equals(commandExecuted.getCommand())) {
@@ -248,14 +344,35 @@ public class BankTagLayoutsPlugin extends Plugin
 		}
 	}
 
-	private void useLayoutPreview() {
-		chatMessage("NYI");
+	private void applyLayoutPreview() {
+		// TODO add items to the tag if they're in the gear/invent but not in the tab.
+		String bankTagName = tabInterface.getActiveTab().getTag();
+		for (Integer itemId : previewLayout.keySet()) {
+			if (!copyPaste.findTag(itemId, previewLayoutTagName)) {
+			    log.debug("adding item " + itemName(itemId) + " (" + itemId + ") to tag");
+				tagManager.addTag(itemId, previewLayoutTagName, false);
+			}
+		}
+
+		System.out.println("saving layout \"" + previewLayoutTagName + "\": " + previewLayout.size() + " " + previewLayout);
+		saveLayoutNonPreview(previewLayoutTagName, previewLayout);
+
+		cancelLayoutPreview();
+	}
+
+	private void hideLayoutPreviewButtons(boolean hide) {
+		applyLayoutPreviewButton.setHidden(hide);
+		cancelLayoutPreviewButton.setHidden(hide);
+		layoutPreviewText.setHidden(hide);
 	}
 
 	private void cancelLayoutPreview() {
 	    System.out.println("cancelling preview");
 		previewLayout = null;
 		previewLayoutTagName = null;
+
+		hideLayoutPreviewButtons(true);
+
 		applyCustomBankTagItemPositions();
 	}
 
@@ -277,18 +394,20 @@ public class BankTagLayoutsPlugin extends Plugin
 
 	private void showLayoutPreview() {
 		System.out.println("autolayout");
+
+	    if (isShowingPreview()) return;
 		TagTab activeTab = tabInterface.getActiveTab();
 		if (activeTab == null) {
 			chatMessage("Select a tab tag before using this feature.");
 			return;
+		} else {
+			// TODO allow creation of new tab.
 		}
+
+		hideLayoutPreviewButtons(false);
 
 		previewLayout = new HashMap<>();
 		previewLayoutTagName = activeTab.getTag();
-
-		for (int i = 0; i <100; i++) {
-			System.out.println(i + " " + toZigZagIndex(i, 0, 0));
-		}
 
 		List<Integer> equippedGear = getEquippedGear();
 		System.out.println("equipped gear is " + equippedGear);
@@ -299,20 +418,59 @@ public class BankTagLayoutsPlugin extends Plugin
 			i++;
 		}
 
-		List<Integer> inventory = getInventory();
-		System.out.println("equipped gear is " + inventory);
-		i = 0;
+		// TODO uh oh... weight reducing items.
+		// distinct leaves the first duplicate it encounters and removes only duplicates coming after the first.
+		List<Integer> inventory1 = getInventory();
+		System.out.println("inventory is " + inventory1);
+		List<Integer> inventory = inventory1.stream().distinct().collect(Collectors.toList());
+		System.out.println("de-duped inventory is " + inventory);
+		// Equipped items will never have >11 items in it so it will never spill over into the next row.
+		i = 16;
 		for (Integer itemId : inventory) {
 			if (itemId == -1) continue;
-			previewLayout.put(itemId, toZigZagIndex(i, 2, 0));
+			previewLayout.put(itemId, toZigZagIndex(i, 0, 0));
 			i++;
 		}
 
-		applyCustomBankTagItemPositions();
+		Optional<Integer> highestUsedIndex = previewLayout.values().stream().max(Integer::compare);
+		if (!highestUsedIndex.isPresent()) return; // no items in the layout were moved.
+		int displacedItemsStart = (highestUsedIndex.get() / 8 + 1) * 8;
 
+		System.out.println("starting at " + displacedItemsStart);
 		// TODO items present in the tag but not in the gear or inventory.
-        List<Integer> displacedItems = new ArrayList<>(); // TODO.
-        // TODO add items to the tag if they're in the gear/invent but not in the tab.
+		String bankTagName = tabInterface.getActiveTab().getTag();
+		Map<Integer, Integer> bankOrderNonPreview = getBankOrderNonPreview(bankTagName);
+
+		List<Integer> displacedItems = bankOrderNonPreview.entrySet().stream().filter(e -> {
+			System.out.println(e.getValue() + " " + displacedItemsStart + " " + !previewLayout.containsKey(e.getKey()) + " " + (e.getValue() <= displacedItemsStart && !previewLayout.containsKey(e.getKey())));
+			return e.getValue() < displacedItemsStart && !previewLayout.containsKey(e.getKey());
+		}).map(e -> e.getKey()).collect(Collectors.toList()); // TODO.
+
+        int j = displacedItemsStart;
+		while (displacedItems.size() > 0 && j < 2000 / 38 * 8) {
+			int finalJ = j;
+			if (!bankOrderNonPreview.values().stream().filter(v -> v == finalJ).findAny().isPresent()) {
+				Integer itemId = displacedItems.remove(0);
+				System.out.println(itemId + " goes to " + j);
+				previewLayout.put(itemId, j);
+			} else {
+				Map.Entry<Integer, Integer> existingLayoutItem = bankOrderNonPreview.entrySet().stream().filter(e -> e.getValue() == finalJ).findAny().orElseGet(null);
+				if (existingLayoutItem != null) {
+					if (previewLayout.containsKey(existingLayoutItem.getKey())) {
+						Integer itemId = displacedItems.remove(0);
+						System.out.println(itemId + " goes to " + j + " (item was moved)");
+						previewLayout.put(itemId, j);
+					}
+				}
+			}
+
+			j++;
+		}
+
+		// Add existing items not displaced by autolayout to the preview.
+		bankOrderNonPreview.entrySet().stream().filter(e -> e.getValue() >= displacedItemsStart && !previewLayout.containsKey(e.getKey())).forEach(e -> previewLayout.put(e.getKey(), e.getValue()));
+
+		applyCustomBankTagItemPositions();
 	}
 
 	private List<Integer> getEquippedGear() {
@@ -332,9 +490,15 @@ public class BankTagLayoutsPlugin extends Plugin
 	@Subscribe(priority = -1) // I want to run after the Bank Tags plugin does, since it will interfere with the layout-ing if hiding tab separators is enabled.
 	public void onScriptPostFired(ScriptPostFired event) {
 		if (event.getScriptId() == ScriptID.BANKMAIN_BUILD) {
-			if (!tabInterface.isActive() || Objects.equals(previewLayoutTagName, tabInterface.getActiveTab().getTag())) cancelLayoutPreview();
+			if (
+					!tabInterface.isActive()
+					|| (isShowingPreview() && !Objects.equals(previewLayoutTagName, tabInterface.getActiveTab().getTag()))) {
+				cancelLayoutPreview();
+			} else {
+				applyCustomBankTagItemPositions();
 
-			applyCustomBankTagItemPositions();
+				updateButton();
+			}
 		}
 	}
 
@@ -444,6 +608,10 @@ public class BankTagLayoutsPlugin extends Plugin
 			return;
 		}
 
+		saveLayoutNonPreview(name, layout);
+	}
+
+	private void saveLayoutNonPreview(String name, Map<Integer, Integer> layout) {
 		configManager.setConfiguration(CONFIG_GROUP, LAYOUT_CONFIG_KEY_PREFIX + name, bankTagOrderMapToString(layout));
 	}
 
@@ -524,6 +692,7 @@ public class BankTagLayoutsPlugin extends Plugin
 
 	private boolean tutorialMessageShown = false;
 	private void applyCustomBankTagItemPositions() {
+		log.debug("applying layout");
         fakeItems.clear();
 
 		if (!tabInterface.isActive()) {
@@ -984,6 +1153,13 @@ public class BankTagLayoutsPlugin extends Plugin
 			return previewLayout;
         }
 
+		return getBankOrderNonPreview(bankTagName);
+	}
+
+	/**
+	 * unlike getBankOrder, this will not return a preview layout when one is currently being show.
+	 */
+	private Map<Integer, Integer> getBankOrderNonPreview(String bankTagName) {
 		String configuration = configManager.getConfiguration(CONFIG_GROUP, LAYOUT_CONFIG_KEY_PREFIX + bankTagName);
 		if (LAYOUT_EXPLICITLY_DISABLED.equals(configuration)) return null;
 		if (configuration == null && !config.layoutEnabledByDefault()) return null;
